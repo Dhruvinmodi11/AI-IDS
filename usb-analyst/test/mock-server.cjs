@@ -113,19 +113,28 @@ function invokeTool(name, args) {
   throw new Error("unknown tool: " + name);
 }
 
+function lastUserText(messages) {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i] || {};
+    const text = String(m.content || "");
+    if (m.role === "user" && !text.startsWith("TOOL_RESULT")) return text;
+  }
+  return "";
+}
+
 function nextReply(messages) {
   const last = messages[messages.length - 1] || {};
   const text = String(last.content || "");
   if (text.startsWith("TOOL_RESULT")) {
-    if (/write_report/.test(text)) return "Saved the note under reports on the USB stick.";
-    if (/profile_table|sum=/.test(text)) {
+    if (/TOOL_RESULT write_report/.test(text)) return "Saved the note under reports on the USB stick.";
+    if (/TOOL_RESULT profile_table|sum=/.test(text)) {
       return "Authoritative metrics from the tool: use the sums it reported (shop line_total is 330 if that file was profiled). Eggs is the highest shop line. This is an operations note, not a CDSCO filing.";
     }
-    if (/list_files|"files"/.test(text)) return "Those are the files on the USB data/reports folders. I can profile any CSV next.";
+    if (/TOOL_RESULT list_files|"files"/.test(text)) return "Those are the files on the USB data/reports folders. I can profile any CSV next.";
     return "Tool finished. Tell me what you want next.";
   }
-  const blob = messages.map((m) => String(m.content || "")).join("\n").toLowerCase();
-  if (blob.includes("write") && blob.includes("report")) {
+  const blob = lastUserText(messages).toLowerCase();
+  if (blob.includes("write") && (blob.includes("report") || blob.includes("gmp"))) {
     return '<tool>{"name":"write_report","arguments":{"filename":"shop-note.md","content":"GMP note: shop line_total 330 (tool). Not a CDSCO filing."}}</tool>';
   }
   const m = blob.match(/0\d_[a-z0-9_]+\.csv/);
