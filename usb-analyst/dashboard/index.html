@@ -7,60 +7,38 @@
   <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
-  <aside class="rail">
-    <div class="brand">
-      <span class="mark">LA</span>
-      <div>
-        <strong>Local Analyst</strong>
-        <em>USB · offline briefing</em>
-      </div>
-    </div>
-    <div id="engineStatus" class="status wait">Connecting to model…</div>
-
-    <section class="drop" id="dropZone" tabindex="0">
-      <p><b>Drop a file</b> or <label class="link">browse<input id="fileInput" type="file" multiple accept=".csv,.tsv,.txt,.json,.xlsx,.xls" /></label></p>
-      <small>CSV, TSV, JSON, TXT. Excel: save as CSV.</small>
-    </section>
-
-    <div class="block">
-      <h2>Datasets</h2>
-      <ul id="fileList" class="files"></ul>
-      <p class="hint" id="emptyFiles">Nothing loaded yet.</p>
-    </div>
-
-    <div class="block">
-      <h2>Columns</h2>
-      <ul id="colList" class="cols"></ul>
+  <aside class="sidebar">
+    <button type="button" class="new-chat" id="newChat">
+      <span>+</span> New chat
+    </button>
+    <nav id="chatNav" class="chat-nav"></nav>
+    <div class="side-foot">
+      <div id="engineStatus" class="pill wait">Connecting…</div>
+      <div class="model-name">Gemma 3n E4B · offline</div>
     </div>
   </aside>
 
-  <main>
-    <header class="top">
-      <div>
-        <h1 id="boardTitle">Business dashboard</h1>
-        <p id="boardSub">Load a table to generate KPIs and charts. Numbers are computed here; the model writes the narrative.</p>
-      </div>
-      <button type="button" id="briefBtn" class="btn primary" disabled>Write executive brief</button>
-    </header>
+  <main id="stage">
+    <div id="welcome" class="welcome">
+      <div class="logo">LA</div>
+      <h1>How can I help you today?</h1>
+    </div>
 
-    <section id="kpis" class="kpis"></section>
-    <section id="charts" class="charts"></section>
-    <section class="table-wrap">
-      <h2>Preview</h2>
-      <div id="tableHost" class="table-scroll"><p class="hint">Drop a spreadsheet to see rows.</p></div>
-    </section>
+    <div id="thread" class="thread hidden"></div>
+
+    <div class="dock">
+      <div id="chips" class="chips"></div>
+      <form id="composer" class="composer">
+        <label class="icon-btn" title="Attach file">
+          +
+          <input id="fileInput" type="file" multiple accept=".csv,.tsv,.txt,.json,.xlsx,.xls,.md" />
+        </label>
+        <textarea id="input" rows="1" placeholder="Message Local Analyst"></textarea>
+        <button type="submit" class="send" id="sendBtn" aria-label="Send">↑</button>
+      </form>
+      <p class="disclaimer">Runs on this PC from your USB stick. Nothing is sent to the cloud.</p>
+    </div>
   </main>
-
-  <aside class="chat">
-    <h2>Ask the analyst</h2>
-    <p class="hint">Questions use the active file. Totals in the dashboard are authoritative — do not trust invented arithmetic.</p>
-    <div id="suggestions" class="suggestions"></div>
-    <div id="transcript" class="transcript"></div>
-    <form id="chatForm">
-      <textarea id="question" rows="3" placeholder="e.g. Which category should we cut next month?" required></textarea>
-      <button type="submit" class="btn" id="askBtn">Ask</button>
-    </form>
-  </aside>
 
   <script src="app.js"></script>
 </body>

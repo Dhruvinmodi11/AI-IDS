@@ -1,30 +1,20 @@
-Local Analyst (USB)
-===================
+Local Analyst (USB, no PC install)
+==================================
 
-Replaces KoboldCpp. Uses llama.cpp (llama-server) plus a business dashboard.
+Nothing is installed on the computer. No Python, no Ollama, no Visual Studio.
+The PC only needs Windows 10/11 and a browser (already there).
 
-What you double-click
----------------------
+All of this lives on the stick:
   F:\Start Analyst.bat
+  F:\gemma\Start-Analyst.ps1
+  F:\gemma\dashboard\          UI
+  F:\gemma\bin\llama\          llama-server.exe + DLLs
+  F:\gemma\models\             Gemma GGUF
+  F:\gemma\state\chats.json    your chats
+  F:\gemma\tmp\  F:\gemma\cache\
 
-Windows blocks USB AutoRun. There is no safe way to launch on insert.
-Plug in the stick, then double-click that file. Leave the black window open.
+Windows blocks USB AutoRun. Double-click F:\Start Analyst.bat
+Leave the window open. Close it to stop, then Eject.
 
-First run
----------
-Downloads the llama.cpp Vulkan build into F:\gemma\bin\llama (~30 MB).
-Loads the GGUF already at F:\gemma\models\ (Gemma 3n E4B IT Q4).
-Opens http://127.0.0.1:8050
-
-Use
----
-1. Drop CSV / TSV / JSON / TXT (for Excel: Save As CSV).
-2. KPIs and charts are calculated in the browser (use these totals).
-3. Ask questions or click "Write executive brief".
-4. Close the PowerShell window when finished, then Eject the USB.
-
-Install onto the stick (from this folder)
------------------------------------------
-  powershell -ExecutionPolicy Bypass -File .\Install-ToUsb.ps1 -Drive F:
-
-Do not put payroll, bank, or Aadhaar files into a git repo.
+Chat like a normal assistant. Attach CSV/JSON/TXT with + or drag onto the box.
+KPIs for tables are computed in the browser; the model writes the reply.

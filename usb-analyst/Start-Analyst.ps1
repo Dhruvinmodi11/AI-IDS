@@ -1,17 +1,23 @@
-# Local Analyst — starts llama.cpp + the business dashboard (no KoboldCpp).
-# Double-click "Start Analyst.bat" on the USB stick.
+# Local Analyst — everything lives on the USB stick.
+# Uses only Windows (PowerShell + a browser). No Python, no Ollama, no install.
 
 $ErrorActionPreference = 'Stop'
 $Root = Split-Path -Parent $MyInvocation.MyCommand.Path
 if (-not $Root) { $Root = 'F:\gemma' }
 Set-Location $Root
 
-$DashDir = Join-Path $Root 'dashboard'
-$BinDir  = Join-Path $Root 'bin\llama'
-$ModelDir = Join-Path $Root 'models'
-$ApiPort = 8091
-$UiPort  = 8050
-$ApiBase = "http://127.0.0.1:$ApiPort"
+$DashDir   = Join-Path $Root 'dashboard'
+$BinDir    = Join-Path $Root 'bin\llama'
+$ModelDir  = Join-Path $Root 'models'
+$TmpDir    = Join-Path $Root 'tmp'
+$CacheDir  = Join-Path $Root 'cache'
+$StateDir  = Join-Path $Root 'state'
+$ChatFile  = Join-Path $StateDir 'chats.json'
+$ApiPort   = 8091
+$UiPort    = 8050
+$ApiBase   = "http://127.0.0.1:$ApiPort"
+
+New-Item -ItemType Directory -Force -Path $DashDir, $BinDir, $ModelDir, $TmpDir, $CacheDir, $StateDir | Out-Null
 
 function Test-Port($port) {
   try {
@@ -44,9 +50,7 @@ function Get-LlamaVulkanZip {
   $tag = $null
   $nightly = $latest.assets | Where-Object { $_.name -eq 'nightly-tag.txt' } | Select-Object -First 1
   if ($nightly) {
-    try {
-      $tag = (Invoke-WebRequest -Uri $nightly.browser_download_url -UseBasicParsing).Content.Trim()
-    } catch {}
+    try { $tag = (Invoke-WebRequest -Uri $nightly.browser_download_url -UseBasicParsing).Content.Trim() } catch {}
   }
   if (-not $tag -and $latest.body -match '\[(b\d+)\]') { $tag = $Matches[1] }
   if (-not $tag) { $tag = 'b10621' }
@@ -64,14 +68,13 @@ function Get-LlamaVulkanZip {
 }
 
 function Install-LlamaServer {
-  New-Item -ItemType Directory -Force -Path $BinDir | Out-Null
   $exe = Join-Path $BinDir 'llama-server.exe'
   if (Test-Path $exe) { return $exe }
 
-  Write-Host 'Downloading llama.cpp Windows Vulkan build (portable GPU)...'
+  Write-Host 'Downloading llama.cpp onto the USB stick (Vulkan, portable)...'
   $asset = Get-LlamaVulkanZip
   Write-Host "Using $($asset.name)"
-  $zip = Join-Path $env:TEMP $asset.name
+  $zip = Join-Path $TmpDir $asset.name
   curl.exe -L --fail --retry 5 -o $zip $asset.browser_download_url
   Expand-Archive -Path $zip -DestinationPath $BinDir -Force
   $found = Get-ChildItem $BinDir -Recurse -Filter 'llama-server.exe' | Select-Object -First 1
@@ -79,7 +82,8 @@ function Install-LlamaServer {
   if ($found.DirectoryName -ne $BinDir) {
     Get-ChildItem $found.DirectoryName | Copy-Item -Destination $BinDir -Force
   }
-  if (-not (Test-Path $exe)) { throw 'Failed to place llama-server.exe' }
+  if (-not (Test-Path $exe)) { throw 'Failed to place llama-server.exe on the USB stick.' }
+  Remove-Item $zip -ErrorAction SilentlyContinue
   return $exe
 }
 
@@ -88,17 +92,19 @@ function Start-Engine($exe, $model) {
     Write-Host "llama.cpp already listening on $ApiPort"
     return $null
   }
-  Write-Host "Starting llama-server with $model"
-  $arg = @(
-    '-m', $model,
-    '--host', '127.0.0.1',
-    '--port', "$ApiPort",
-    '-c', '8192',
-    '-ngl', '99',
-    '--jinja'
-  )
-  $p = Start-Process -FilePath $exe -ArgumentList $arg -WorkingDirectory $BinDir -PassThru -WindowStyle Minimized
-  return $p
+  Write-Host "Starting llama-server from USB: $model"
+  $psi = New-Object System.Diagnostics.ProcessStartInfo
+  $psi.FileName = $exe
+  $psi.WorkingDirectory = $BinDir
+  $psi.UseShellExecute = $false
+  $psi.CreateNoWindow = $true
+  $psi.Arguments = "-m `"$model`" --host 127.0.0.1 --port $ApiPort -c 8192 -ngl 99 --jinja"
+  $psi.EnvironmentVariables['TEMP'] = $TmpDir
+  $psi.EnvironmentVariables['TMP'] = $TmpDir
+  $psi.EnvironmentVariables['TMPDIR'] = $TmpDir
+  $psi.EnvironmentVariables['LLAMA_CACHE'] = $CacheDir
+  $psi.EnvironmentVariables['XDG_CACHE_HOME'] = $CacheDir
+  return [Diagnostics.Process]::Start($psi)
 }
 
 function Wait-Engine {
@@ -112,25 +118,15 @@ function Wait-Engine {
     }
     Start-Sleep -Seconds 2
   }
-  throw 'llama.cpp did not become ready. Check the llama-server window for errors.'
+  throw 'llama.cpp did not become ready. Check F:\gemma\tmp if the USB is full.'
 }
 
 function Start-Dashboard {
   $prefix = "http://127.0.0.1:$UiPort/"
-  if (-not ([Net.HttpListener]::IsSupported)) {
-    $index = Join-Path $DashDir 'index.html'
-    Start-Process $index
-    Write-Host "Opened dashboard as a file. API is $ApiBase"
-    return $null
-  }
   $listen = New-Object Net.HttpListener
   $listen.Prefixes.Add($prefix)
-  try {
-    $listen.Start()
-  } catch {
-    Write-Host "Port $UiPort unavailable; opening dashboard file instead."
-    Start-Process (Join-Path $DashDir 'index.html')
-    return $null
+  try { $listen.Start() } catch {
+    throw "Could not bind $prefix. Close other Local Analyst windows and try again."
   }
   Write-Host "Dashboard: $prefix"
   Start-Process $prefix
@@ -142,8 +138,7 @@ function Mime($path) {
     '.html' { 'text/html; charset=utf-8' }
     '.css'  { 'text/css; charset=utf-8' }
     '.js'   { 'application/javascript; charset=utf-8' }
-    '.svg'  { 'image/svg+xml' }
-    '.json' { 'application/json' }
+    '.json' { 'application/json; charset=utf-8' }
     default { 'application/octet-stream' }
   }
 }
@@ -157,14 +152,33 @@ function Send-Bytes($ctx, $code, $type, $bytes) {
   $ctx.Response.OutputStream.Close()
 }
 
+function Handle-Chats($ctx) {
+  if ($ctx.Request.HttpMethod -eq 'GET') {
+    if (-not (Test-Path $ChatFile)) {
+      Send-Bytes $ctx 200 'application/json; charset=utf-8' ([Text.Encoding]::UTF8.GetBytes('[]'))
+      return
+    }
+    Send-Bytes $ctx 200 'application/json; charset=utf-8' ([IO.File]::ReadAllBytes($ChatFile))
+    return
+  }
+  if ($ctx.Request.HttpMethod -in @('POST','PUT')) {
+    $ms = New-Object IO.MemoryStream
+    $ctx.Request.InputStream.CopyTo($ms)
+    [IO.File]::WriteAllBytes($ChatFile, $ms.ToArray())
+    Send-Bytes $ctx 200 'application/json; charset=utf-8' ([Text.Encoding]::UTF8.GetBytes('{"ok":true}'))
+    return
+  }
+  Send-Bytes $ctx 405 'text/plain' ([Text.Encoding]::UTF8.GetBytes('method'))
+}
+
 function Proxy-Api($ctx) {
   $url = $ApiBase + $ctx.Request.RawUrl
   $preq = [Net.HttpWebRequest]::Create($url)
   $preq.Method = $ctx.Request.HttpMethod
   $preq.Timeout = 180000
   $preq.ReadWriteTimeout = 180000
+  $preq.AllowWriteStreamBuffering = $false
   if ($ctx.Request.ContentType) { $preq.ContentType = $ctx.Request.ContentType }
-  if ($ctx.Request.AcceptTypes) { $preq.Accept = ($ctx.Request.AcceptTypes -join ',') }
   if ($ctx.Request.HttpMethod -in @('POST','PUT','PATCH')) {
     $ms = New-Object IO.MemoryStream
     $ctx.Request.InputStream.CopyTo($ms)
@@ -175,21 +189,23 @@ function Proxy-Api($ctx) {
     $os.Write($buf, 0, $buf.Length)
     $os.Close()
   }
-  try {
-    $pres = $preq.GetResponse()
-  } catch [Net.WebException] {
+  try { $pres = $preq.GetResponse() }
+  catch [Net.WebException] {
     $pres = $_.Exception.Response
     if (-not $pres) { throw }
   }
   $ctx.Response.StatusCode = [int]$pres.StatusCode
   if ($pres.ContentType) { $ctx.Response.ContentType = $pres.ContentType }
-  $out = New-Object IO.MemoryStream
-  $pres.GetResponseStream().CopyTo($out)
-  $bytes = $out.ToArray()
+  $ctx.Response.SendChunked = $true
+  $in = $pres.GetResponseStream()
+  $out = $ctx.Response.OutputStream
+  $buffer = New-Object byte[] 4096
+  while (($n = $in.Read($buffer, 0, $buffer.Length)) -gt 0) {
+    $out.Write($buffer, 0, $n)
+    $out.Flush()
+  }
   $pres.Close()
-  $ctx.Response.ContentLength64 = $bytes.Length
-  $ctx.Response.OutputStream.Write($bytes, 0, $bytes.Length)
-  $ctx.Response.OutputStream.Close()
+  $out.Close()
 }
 
 $engineProc = $null
@@ -200,18 +216,13 @@ try {
   $engineProc = Start-Engine $exe $model
   Wait-Engine
   $listen = Start-Dashboard
-  if (-not $listen) {
-    Write-Host 'Leave this window open while you use the dashboard. Close it to stop the model.'
-    if ($engineProc) { Wait-Process -Id $engineProc.Id }
-    else { while ($true) { Start-Sleep 30 } }
-    return
-  }
-  Write-Host 'Leave this window open. Close it to stop Local Analyst.'
+  Write-Host 'Leave this window open. Close it to stop. Nothing is installed on the PC.'
   while ($listen.IsListening) {
     $ctx = $listen.GetContext()
     try {
       $path = [Uri]::UnescapeDataString($ctx.Request.Url.AbsolutePath)
       if ($path -eq '/') { $path = '/index.html' }
+      if ($path -eq '/api/chats') { Handle-Chats $ctx; continue }
       if ($path.StartsWith('/v1') -or $path -eq '/health' -or $path.StartsWith('/props')) {
         Proxy-Api $ctx
         continue
@@ -227,8 +238,7 @@ try {
       if (-not (Test-Path $file)) {
         Send-Bytes $ctx 404 'text/plain' ([Text.Encoding]::UTF8.GetBytes('not found')); continue
       }
-      $bytes = [IO.File]::ReadAllBytes($file)
-      Send-Bytes $ctx 200 (Mime $file) $bytes
+      Send-Bytes $ctx 200 (Mime $file) ([IO.File]::ReadAllBytes($file))
     } catch {
       try { Send-Bytes $ctx 500 'text/plain' ([Text.Encoding]::UTF8.GetBytes($_.Exception.Message)) } catch {}
     }
