@@ -69,11 +69,18 @@ function req(pathname, { method = "GET", body } = {}) {
     const dash = await req("/");
     assert.ok(dash.text.includes("agent-lib.js"));
 
-    const first = await req("/v1/chat/completions", {
+    const withSystem = await req("/v1/chat/completions", {
       method: "POST",
-      body: JSON.stringify({ messages: [{ role: "user", content: "What files are in my USB data folder?" }] }),
+      body: JSON.stringify({
+        messages: [
+          { role: "system", content: "You can list, read, profile, search, and write files. write_report saves markdown into reports/." },
+          { role: "user", content: "What files are in my USB data folder?" },
+        ],
+      }),
     });
-    const firstText = parseSseText(first.text);
+    assert.strictEqual(T.extractToolCalls(parseSseText(withSystem.text), null)[0].name, "list_files");
+
+    const firstText = parseSseText(withSystem.text);
     const calls = T.extractToolCalls(firstText, null);
     assert.strictEqual(calls[0].name, "list_files");
 
