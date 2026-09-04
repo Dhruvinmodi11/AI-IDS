@@ -1,0 +1,9 @@
+Try these after Start Analyst.bat is running:
+
+1. What files are on the USB data folder?
+2. What is the total of 01_shop_small.csv? Which item is highest?
+3. Profile 02_monthly_spend.csv and say whether rent dominates.
+4. Write a short GMP-style note on the shop file into reports.
+
+Expected: shop line_total sum = 330 (eggs 120). Monthly amount sum = 12108 (rent 8000).
+The model must call tools. It cannot see F:\ by itself.

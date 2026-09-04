@@ -34,7 +34,7 @@ body {
   width: 1.4rem; height: 1.4rem; border-radius: 999px;
   display: grid; place-items: center; border: 1px solid var(--line);
 }
-.chat-nav { flex: 1; overflow: auto; margin-top: 0.8rem; }
+.chat-nav { flex: 1; overflow: auto; margin-top: 0.8rem; min-height: 4rem; }
 .chat-nav button {
   display: block; width: 100%; text-align: left;
   background: none; border: 0; color: var(--text);
@@ -64,6 +64,37 @@ main {
   background: var(--accent); color: #fff; font-weight: 700;
 }
 .welcome h1 { margin: 0; font-size: 1.7rem; font-weight: 600; }
+.welcome .sub { margin: 0; color: var(--muted); font-size: 0.95rem; max-width: 32rem; text-align: center; }
+.suggestions { display: flex; flex-wrap: wrap; gap: 0.5rem; justify-content: center; max-width: 36rem; }
+.suggestions button {
+  background: var(--panel); color: var(--text); border: 1px solid var(--line);
+  border-radius: 999px; padding: 0.45rem 0.85rem; cursor: pointer; font: inherit; font-size: 0.85rem;
+}
+.suggestions button:hover { border-color: var(--accent); }
+.side-files {
+  border-top: 1px solid #2a2a2a; margin-top: 0.5rem; padding-top: 0.55rem;
+  max-height: 28vh; overflow: auto;
+}
+.side-label { font-size: 0.7rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; padding: 0 0.4rem 0.3rem; }
+.file-list button {
+  display: block; width: 100%; text-align: left; background: none; border: 0;
+  color: var(--muted); padding: 0.28rem 0.55rem; border-radius: 6px; cursor: pointer;
+  font: inherit; font-size: 0.78rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.file-list button:hover { background: #2a2a2a; color: var(--text); }
+.file-list .empty { color: var(--muted); font-size: 0.75rem; padding: 0.2rem 0.55rem; }
+.traces {
+  max-width: 48rem; margin: 0 auto; padding: 0 1.2rem 0.3rem 4.2rem;
+  display: flex; flex-wrap: wrap; gap: 0.35rem;
+}
+.trace {
+  font-size: 0.75rem; color: var(--muted);
+  background: var(--panel); border: 1px solid var(--line);
+  border-radius: 999px; padding: 0.2rem 0.6rem;
+}
+.trace.ok { color: #7dcea0; }
+.trace.bad { color: #f5a9a0; }
+.trace.wait { color: #e8c572; }
 .thread {
   flex: 1; overflow: auto; padding: 1.2rem 0 8rem;
 }

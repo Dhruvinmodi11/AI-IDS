@@ -6,18 +6,24 @@ $Root = Split-Path -Parent $MyInvocation.MyCommand.Path
 if (-not $Root) { $Root = 'F:\gemma' }
 Set-Location $Root
 
-$DashDir   = Join-Path $Root 'dashboard'
-$BinDir    = Join-Path $Root 'bin\llama'
-$ModelDir  = Join-Path $Root 'models'
-$TmpDir    = Join-Path $Root 'tmp'
-$CacheDir  = Join-Path $Root 'cache'
-$StateDir  = Join-Path $Root 'state'
-$ChatFile  = Join-Path $StateDir 'chats.json'
-$ApiPort   = 8091
-$UiPort    = 8050
-$ApiBase   = "http://127.0.0.1:$ApiPort"
+$DashDir    = Join-Path $Root 'dashboard'
+$BinDir     = Join-Path $Root 'bin\llama'
+$ModelDir   = Join-Path $Root 'models'
+$TmpDir     = Join-Path $Root 'tmp'
+$CacheDir   = Join-Path $Root 'cache'
+$StateDir   = Join-Path $Root 'state'
+$DataDir    = Join-Path $Root 'data'
+$ReportsDir = Join-Path $Root 'reports'
+$ChatFile   = Join-Path $StateDir 'chats.json'
+$ApiPort    = 8091
+$UiPort     = 8050
+$ApiBase    = "http://127.0.0.1:$ApiPort"
+$script:ModelPath = $null
+$MaxReadBytes = 400000
+$MaxWriteBytes = 200000
+$MaxProfileBytes = 2000000
 
-New-Item -ItemType Directory -Force -Path $DashDir, $BinDir, $ModelDir, $TmpDir, $CacheDir, $StateDir | Out-Null
+New-Item -ItemType Directory -Force -Path $DashDir, $BinDir, $ModelDir, $TmpDir, $CacheDir, $StateDir, $DataDir, $ReportsDir | Out-Null
 
 function Test-Port($port) {
   try {
@@ -30,10 +36,10 @@ function Test-Port($port) {
 
 function Get-Model {
   $all = @(Get-ChildItem -Path $ModelDir -Filter *.gguf -ErrorAction SilentlyContinue)
-  if (-not $all.Count) { throw "No .gguf in $ModelDir. Put MedGemma or another GGUF there." }
-  $prefer = @('medgemma','openbio','meditron','ayurparam','biomistral','gemma-3n')
+  if (-not $all.Count) { throw "No .gguf in $ModelDir. Put a GGUF (Qwen2.5-7B or Gemma 3n) there." }
+  $prefer = @('qwen2.5-7b','qwen2.5','qwen','gemma-3n','medgemma','openbio','meditron','ayurparam','biomistral','gemma')
   foreach ($p in $prefer) {
-    $hit = $all | Where-Object { $_.Name -match $p } | Select-Object -First 1
+    $hit = $all | Where-Object { $_.Name -match [regex]::Escape($p) } | Select-Object -First 1
     if ($hit) { return $hit.FullName }
   }
   return ($all | Sort-Object Length -Descending | Select-Object -First 1).FullName
@@ -156,6 +162,281 @@ function Send-Bytes($ctx, $code, $type, $bytes) {
   $ctx.Response.OutputStream.Close()
 }
 
+function Send-Json($ctx, $obj, $code = 200) {
+  $json = $obj | ConvertTo-Json -Depth 12 -Compress
+  Send-Bytes $ctx $code 'application/json; charset=utf-8' ([Text.Encoding]::UTF8.GetBytes($json))
+}
+
+function Read-JsonBody($ctx) {
+  $ms = New-Object IO.MemoryStream
+  $ctx.Request.InputStream.CopyTo($ms)
+  $text = [Text.Encoding]::UTF8.GetString($ms.ToArray())
+  if ([string]::IsNullOrWhiteSpace($text)) { return $null }
+  return $text | ConvertFrom-Json
+}
+
+function Get-Arg($obj, $key, $default = $null) {
+  if ($null -eq $obj) { return $default }
+  $p = $obj.PSObject.Properties[$key]
+  if ($p -and $null -ne $p.Value -and "$($p.Value)" -ne '') { return $p.Value }
+  return $default
+}
+
+function Get-SandboxRoot($name) {
+  switch ($name) {
+    'data' { return [IO.Path]::GetFullPath($DataDir) }
+    'reports' { return [IO.Path]::GetFullPath($ReportsDir) }
+    default { return $null }
+  }
+}
+
+function Test-UnderRoot($full, $root) {
+  $full = [IO.Path]::GetFullPath($full)
+  $root = [IO.Path]::GetFullPath($root)
+  $prefix = if ($root.EndsWith('\')) { $root } else { "$root\" }
+  return $full.Equals($root, [StringComparison]::OrdinalIgnoreCase) -or $full.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)
+}
+
+function Resolve-SandboxFile($rel, [switch]$MustExist) {
+  if ([string]::IsNullOrWhiteSpace($rel)) { throw 'path required' }
+  $rel = "$rel".Trim().Replace('/', '\')
+  if ($rel.Contains('..') -or $rel.Contains(':')) { throw 'path not allowed' }
+  $rel = $rel.TrimStart('\')
+
+  $folder = $null
+  $rest = $rel
+  if ($rel -match '^(data|reports)\\(.+)$') {
+    $folder = $Matches[1]
+    $rest = $Matches[2]
+  } elseif ($rel -match '^(data|reports)$') {
+    throw 'path must be a file, not a folder'
+  }
+
+  $candidates = @()
+  if ($folder) {
+    $candidates += [IO.Path]::GetFullPath((Join-Path (Get-SandboxRoot $folder) $rest))
+  } else {
+    $candidates += [IO.Path]::GetFullPath((Join-Path $DataDir $rel))
+    $candidates += [IO.Path]::GetFullPath((Join-Path $ReportsDir $rel))
+  }
+
+  foreach ($full in $candidates) {
+    $ok = $false
+    foreach ($name in @('data','reports')) {
+      if (Test-UnderRoot $full (Get-SandboxRoot $name)) { $ok = $true; break }
+    }
+    if (-not $ok) { continue }
+    if (Test-Path -LiteralPath $full -PathType Leaf) { return $full }
+    if (-not $MustExist) { return $full }
+  }
+  if ($MustExist) { throw "file not found: $rel" }
+  throw "path not allowed: $rel"
+}
+
+function Get-RelPath($full) {
+  $full = [IO.Path]::GetFullPath($full)
+  foreach ($name in @('data','reports')) {
+    $root = Get-SandboxRoot $name
+    if (Test-UnderRoot $full $root) {
+      $prefix = if ($root.EndsWith('\')) { $root } else { "$root\" }
+      return ($name + '/' + $full.Substring($prefix.Length).Replace('\', '/'))
+    }
+  }
+  return [IO.Path]::GetFileName($full)
+}
+
+function List-SandboxFiles($folder) {
+  $dirs = @()
+  if ($folder -eq 'data') { $dirs = @(@{ name = 'data'; path = $DataDir }) }
+  elseif ($folder -eq 'reports') { $dirs = @(@{ name = 'reports'; path = $ReportsDir }) }
+  else {
+    $dirs = @(
+      @{ name = 'data'; path = $DataDir },
+      @{ name = 'reports'; path = $ReportsDir }
+    )
+  }
+  $files = @()
+  foreach ($d in $dirs) {
+    if (-not (Test-Path $d.path)) { continue }
+    Get-ChildItem -LiteralPath $d.path -File -ErrorAction SilentlyContinue | ForEach-Object {
+      $files += [pscustomobject]@{
+        name = $_.Name
+        path = "$($d.name)/$($_.Name)"
+        folder = $d.name
+        bytes = $_.Length
+        modified = $_.LastWriteTime.ToString('s')
+      }
+    }
+  }
+  return @($files)
+}
+
+function ConvertTo-Number($v) {
+  if ($null -eq $v) { return $null }
+  $t = "$v" -replace '[,₹$%\s]', ''
+  if ($t -eq '') { return $null }
+  $n = 0.0
+  if ([double]::TryParse($t, [Globalization.NumberStyles]::Float, [Globalization.CultureInfo]::InvariantCulture, [ref]$n)) { return $n }
+  return $null
+}
+
+function Read-TableRecords($full) {
+  $ext = [IO.Path]::GetExtension($full).ToLowerInvariant()
+  $text = [IO.File]::ReadAllText($full)
+  if ($ext -eq '.json') {
+    $data = $text | ConvertFrom-Json
+    if ($data.PSObject.Properties['data'] -and $data.data) { $data = $data.data }
+    $arr = @($data)
+    if (-not $arr.Count) { return @{ columns = @(); records = @() } }
+    $first = $arr[0]
+    $columns = @($first.PSObject.Properties.Name)
+    $records = @()
+    foreach ($row in $arr) {
+      $o = [ordered]@{}
+      foreach ($c in $columns) { $o[$c] = if ($null -eq $row.$c) { '' } else { "$($row.$c)" } }
+      $records += [pscustomobject]$o
+    }
+    return @{ columns = $columns; records = $records }
+  }
+  $delim = ','
+  if ($ext -eq '.tsv') { $delim = "`t" }
+  $csv = @(Import-Csv -LiteralPath $full -Delimiter $delim)
+  if (-not $csv.Count) { return @{ columns = @(); records = @() } }
+  $columns = @($csv[0].PSObject.Properties.Name)
+  return @{ columns = $columns; records = $csv }
+}
+
+function Profile-TableFile($full) {
+  $info = Read-TableRecords $full
+  $columns = @($info.columns)
+  $records = @($info.records)
+  $stats = @()
+  foreach ($c in $columns) {
+    $vals = @()
+    foreach ($row in $records) {
+      $v = "$($row.$c)"
+      if (-not [string]::IsNullOrWhiteSpace($v)) { $vals += $v.Trim() }
+    }
+    $nums = @()
+    foreach ($v in $vals) {
+      $n = ConvertTo-Number $v
+      if ($null -ne $n) { $nums += $n }
+    }
+    if ($vals.Count -gt 0 -and ($nums.Count / [double]$vals.Count) -gt 0.7) {
+      $sum = 0.0
+      foreach ($n in $nums) { $sum += $n }
+      $stats += [pscustomobject]@{
+        column = $c
+        kind = 'number'
+        sum = $sum
+        mean = [math]::Round($sum / $nums.Count, 6)
+        min = ($nums | Measure-Object -Minimum).Minimum
+        max = ($nums | Measure-Object -Maximum).Maximum
+        n = $nums.Count
+      }
+    } else {
+      $counts = @{}
+      foreach ($v in $vals) {
+        if ($counts.ContainsKey($v)) { $counts[$v]++ } else { $counts[$v] = 1 }
+      }
+      $top = @($counts.GetEnumerator() | Sort-Object Value -Descending | Select-Object -First 6 | ForEach-Object {
+        [pscustomobject]@{ value = $_.Key; count = $_.Value }
+      })
+      $stats += [pscustomobject]@{
+        column = $c
+        kind = 'category'
+        unique = $counts.Count
+        top = @($top)
+      }
+    }
+  }
+  $sample = @($records | Select-Object -First 20)
+  $metrics = @()
+  foreach ($s in $stats) {
+    if ($s.kind -eq 'number') {
+      $metrics += "$($s.column): sum=$($s.sum), mean=$($s.mean), min=$($s.min), max=$($s.max), n=$($s.n)"
+    } else {
+      $topText = ($s.top | ForEach-Object { "$($_.value)($($_.count))" }) -join ', '
+      $metrics += "$($s.column): unique=$($s.unique), top=$topText"
+    }
+  }
+  return [pscustomobject]@{
+    ok = $true
+    path = Get-RelPath $full
+    rows = $records.Count
+    columns = @($columns)
+    metrics = @($metrics)
+    stats = @($stats)
+    sample = @($sample)
+  }
+}
+
+function Invoke-Tool($name, $argsObj) {
+  switch ($name) {
+    'list_files' {
+      $folder = Get-Arg $argsObj 'folder' 'all'
+      $files = List-SandboxFiles $folder
+      return @{ ok = $true; folder = $folder; files = @($files) }
+    }
+    'read_file' {
+      $rel = Get-Arg $argsObj 'path'
+      if (-not $rel) { $rel = Get-Arg $argsObj 'filename' }
+      $full = Resolve-SandboxFile $rel -MustExist
+      $len = (Get-Item -LiteralPath $full).Length
+      if ($len -gt $MaxReadBytes) { throw "file too large to read ($len bytes). Use profile_table for CSVs." }
+      $text = [IO.File]::ReadAllText($full)
+      return @{ ok = $true; path = Get-RelPath $full; bytes = $len; content = $text }
+    }
+    'profile_table' {
+      $rel = Get-Arg $argsObj 'path'
+      if (-not $rel) { $rel = Get-Arg $argsObj 'filename' }
+      $full = Resolve-SandboxFile $rel -MustExist
+      $len = (Get-Item -LiteralPath $full).Length
+      if ($len -gt $MaxProfileBytes) { throw "file too large to profile ($len bytes)" }
+      return Profile-TableFile $full
+    }
+    'search_files' {
+      $query = Get-Arg $argsObj 'query'
+      if ([string]::IsNullOrWhiteSpace($query)) { throw 'query required' }
+      $folder = Get-Arg $argsObj 'folder' 'all'
+      $files = List-SandboxFiles $folder
+      $matches = @()
+      foreach ($f in $files) {
+        if ($f.bytes -gt $MaxReadBytes) { continue }
+        $full = Resolve-SandboxFile $f.path -MustExist
+        $lines = [IO.File]::ReadAllLines($full)
+        for ($i = 0; $i -lt $lines.Length; $i++) {
+          if ($lines[$i].IndexOf($query, [StringComparison]::OrdinalIgnoreCase) -ge 0) {
+            $snippet = $lines[$i]
+            if ($snippet.Length -gt 240) { $snippet = $snippet.Substring(0, 240) }
+            $matches += [pscustomobject]@{ path = $f.path; line = $i + 1; text = $snippet }
+            if ($matches.Count -ge 40) { break }
+          }
+        }
+        if ($matches.Count -ge 40) { break }
+      }
+      return @{ ok = $true; query = "$query"; matches = @($matches) }
+    }
+    'write_report' {
+      $filename = Get-Arg $argsObj 'filename'
+      $content = Get-Arg $argsObj 'content'
+      if ([string]::IsNullOrWhiteSpace($filename)) { throw 'filename required' }
+      if ($null -eq $content) { throw 'content required' }
+      $base = [IO.Path]::GetFileName("$filename")
+      if ($base -notmatch '^[\w.\- ]+\.(md|txt|csv|json)$') {
+        throw 'filename must be a simple .md, .txt, .csv, or .json name'
+      }
+      $full = [IO.Path]::GetFullPath((Join-Path $ReportsDir $base))
+      if (-not (Test-UnderRoot $full $ReportsDir)) { throw 'reports path not allowed' }
+      $bytes = [Text.Encoding]::UTF8.GetByteCount("$content")
+      if ($bytes -gt $MaxWriteBytes) { throw 'report too large' }
+      [IO.File]::WriteAllText($full, "$content", [Text.UTF8Encoding]::new($false))
+      return @{ ok = $true; filename = $base; path = "reports/$base"; bytes = $bytes }
+    }
+    default { throw "unknown tool: $name" }
+  }
+}
+
 function Handle-Chats($ctx) {
   if ($ctx.Request.HttpMethod -eq 'GET') {
     if (-not (Test-Path $ChatFile)) {
@@ -173,6 +454,38 @@ function Handle-Chats($ctx) {
     return
   }
   Send-Bytes $ctx 405 'text/plain' ([Text.Encoding]::UTF8.GetBytes('method'))
+}
+
+function Handle-Status($ctx) {
+  $modelName = if ($script:ModelPath) { [IO.Path]::GetFileName($script:ModelPath) } else { $null }
+  $files = List-SandboxFiles 'all'
+  Send-Json $ctx @{
+    ok = $true
+    model = $modelName
+    tools = @('list_files','read_file','profile_table','search_files','write_report')
+    data = 'data'
+    reports = 'reports'
+    files = @($files)
+  }
+}
+
+function Handle-Tools($ctx) {
+  if ($ctx.Request.HttpMethod -ne 'POST') {
+    Send-Bytes $ctx 405 'text/plain' ([Text.Encoding]::UTF8.GetBytes('method'))
+    return
+  }
+  try {
+    $body = Read-JsonBody $ctx
+    $name = Get-Arg $body 'name'
+    if ($name) { $name = "$name".ToLowerInvariant() }
+    $argsObj = Get-Arg $body 'arguments'
+    if (-not $argsObj) { $argsObj = Get-Arg $body 'args' }
+    if (-not $name) { throw 'name required' }
+    $result = Invoke-Tool $name $argsObj
+    Send-Json $ctx $result
+  } catch {
+    Send-Json $ctx @{ ok = $false; error = $_.Exception.Message }
+  }
 }
 
 function Proxy-Api($ctx) {
@@ -215,11 +528,13 @@ function Proxy-Api($ctx) {
 $engineProc = $null
 $listen = $null
 try {
-  $model = Get-Model
+  $script:ModelPath = Get-Model
   $exe = Install-LlamaServer
-  $engineProc = Start-Engine $exe $model
+  $engineProc = Start-Engine $exe $script:ModelPath
   Wait-Engine
   $listen = Start-Dashboard
+  Write-Host "Model: $([IO.Path]::GetFileName($script:ModelPath))"
+  Write-Host 'Agent tools: list_files, read_file, profile_table, search_files, write_report'
   Write-Host 'Leave this window open. Close it to stop. Nothing is installed on the PC.'
   while ($listen.IsListening) {
     $ctx = $listen.GetContext()
@@ -227,6 +542,8 @@ try {
       $path = [Uri]::UnescapeDataString($ctx.Request.Url.AbsolutePath)
       if ($path -eq '/') { $path = '/index.html' }
       if ($path -eq '/api/chats') { Handle-Chats $ctx; continue }
+      if ($path -eq '/api/status') { Handle-Status $ctx; continue }
+      if ($path -eq '/api/tools') { Handle-Tools $ctx; continue }
       if ($path.StartsWith('/v1') -or $path -eq '/health' -or $path.StartsWith('/props')) {
         Proxy-Api $ctx
         continue

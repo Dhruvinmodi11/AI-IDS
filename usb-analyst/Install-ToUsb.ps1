@@ -17,13 +17,21 @@ New-Item -ItemType Directory -Force -Path $dest, "$dest\dashboard", "$dest\model
 
 Copy-Item -Force "$Source\Start-Analyst.ps1" $dest
 Copy-Item -Force "$Source\Start Analyst.bat" $dest
+Copy-Item -Force "$Source\README.txt" $dest
+if (Test-Path "$Source\Fetch-Qwen.ps1") { Copy-Item -Force "$Source\Fetch-Qwen.ps1" $dest }
 Copy-Item -Force "$Source\dashboard\*" "$dest\dashboard" -Recurse
 Copy-Item -Force "$Source\USB-Root-Start-Analyst.bat" (Join-Path $Drive 'Start Analyst.bat')
+New-Item -ItemType Directory -Force -Path "$dest\data", "$dest\reports" | Out-Null
+Get-ChildItem "$Source\data" -File -ErrorAction SilentlyContinue | ForEach-Object {
+  $target = Join-Path "$dest\data" $_.Name
+  if (-not (Test-Path $target)) { Copy-Item $_.FullName $target }
+}
 
 Write-Host ""
 Write-Host "Installed to $dest"
 Write-Host "Launcher on USB root: $Drive\Start Analyst.bat"
 Write-Host ""
-Write-Host "Keep your GGUF at $dest\models\google_gemma-3n-E4B-it-Q4_K_M.gguf"
+Write-Host "Keep your GGUF in $dest\models\ (Gemma 3n is fine; Qwen2.5-7B follows tools better)"
 Write-Host "Windows will NOT auto-start on insert. Double-click Start Analyst.bat"
 Write-Host "First run downloads llama.cpp (~30 MB) into $dest\bin\llama"
+Write-Host "Optional: .\Fetch-Qwen.ps1 -Drive $Drive"

@@ -1,5 +1,7 @@
 (() => {
   const API = location.protocol === "file:" ? "http://127.0.0.1:8091" : "";
+  const T = window.AnalystTools;
+  const MAX_STEPS = 8;
 
   const $ = (id) => document.getElementById(id);
   const input = $("input");
@@ -9,12 +11,14 @@
   const sendBtn = $("sendBtn");
   const composer = $("composer");
   const engineStatus = $("engineStatus");
+  const modelNameEl = $("modelName");
 
   let engine = false;
   let busy = false;
   let attachments = [];
   let chats = [];
   let currentId = null;
+  let nativeToolsOk = true;
 
   function uid() { return Math.random().toString(36).slice(2, 10); }
   async function loadChatsFromUsb() {
@@ -42,53 +46,6 @@
     return c;
   }
 
-  function looksNumber(v) {
-    const t = String(v).replace(/[,₹$%\s]/g, "");
-    return t !== "" && !Number.isNaN(Number(t));
-  }
-  function toNumber(v) {
-    const n = Number(String(v).replace(/[,₹$%\s]/g, ""));
-    return Number.isNaN(n) ? null : n;
-  }
-
-  function parseCSV(text, sep) {
-    const rows = [];
-    let row = [], cell = "", q = false;
-    const src = text.replace(/^\uFEFF/, "");
-    for (let i = 0; i < src.length; i++) {
-      const c = src[i];
-      if (q) {
-        if (c === '"') {
-          if (src[i + 1] === '"') { cell += '"'; i++; } else q = false;
-        } else cell += c;
-      } else if (c === '"') q = true;
-      else if (c === sep) { row.push(cell); cell = ""; }
-      else if (c === "\n") { row.push(cell); rows.push(row); row = []; cell = ""; }
-      else if (c !== "\r") cell += c;
-    }
-    if (cell.length || row.length) { row.push(cell); rows.push(row); }
-    return rows.filter((r) => r.some((x) => String(x).trim() !== ""));
-  }
-
-  function profileTable(columns, records) {
-    const stats = [];
-    for (const c of columns) {
-      const vals = records.map((r) => r[c]).filter((v) => v !== "");
-      const nums = vals.map(toNumber).filter((n) => n != null);
-      if (vals.length && nums.length / vals.length > 0.7) {
-        const sum = nums.reduce((a, b) => a + b, 0);
-        stats.push(`${c}: sum=${sum}, mean=${sum / nums.length}, min=${Math.min(...nums)}, max=${Math.max(...nums)}, n=${nums.length}`);
-      } else {
-        const counts = {};
-        vals.forEach((v) => { counts[v] = (counts[v] || 0) + 1; });
-        const top = Object.entries(counts).sort((a, b) => b[1] - a[1]).slice(0, 6)
-          .map((x) => x[0] + "(" + x[1] + ")").join(", ");
-        stats.push(`${c}: unique=${Object.keys(counts).length}, top=${top}`);
-      }
-    }
-    return stats;
-  }
-
   function fileToAttachment(file, text) {
     const name = file.name.toLowerCase();
     if (name.endsWith(".xlsx") || name.endsWith(".xls")) {
@@ -109,7 +66,7 @@
       }
     } else if (name.endsWith(".csv") || name.endsWith(".tsv") || text.includes(",") || text.includes("\t")) {
       const sep = name.endsWith(".tsv") || (text.split("\t").length > text.split(",").length * 2) ? "\t" : ",";
-      const grid = parseCSV(text, sep);
+      const grid = T.parseCSV(text, sep);
       if (grid.length >= 2) {
         columns = grid[0].map((h, i) => String(h).trim() || "col_" + (i + 1));
         records = grid.slice(1).map((r) => {
@@ -123,7 +80,7 @@
     const sample = kind === "table"
       ? [columns.join(","), ...records.slice(0, 40).map((r) => columns.map((c) => r[c]).join(","))].join("\n")
       : text.slice(0, 12000);
-    const metrics = kind === "table" ? profileTable(columns, records) : [];
+    const metrics = kind === "table" ? T.profileTable(columns, records) : [];
     const context = kind === "table"
       ? `Attached table ${file.name} (${records.length} rows).\nAuthoritative metrics (already computed; do not recalculate):\n- ${metrics.join("\n- ")}\nSample:\n${sample}`
       : `Attached file ${file.name}:\n${sample}`;
@@ -163,14 +120,20 @@
       const x = document.createElement("button");
       x.type = "button";
       x.textContent = "×";
-      x.onclick = () => { attachments.splice(i, 1); renderChips(); renderStats(); };
+      x.onclick = () => { attachments.splice(i, 1); renderChips(); renderThread(); };
       el.appendChild(x);
       chips.appendChild(el);
     });
   }
 
-  function renderStats() {
-    thread.querySelectorAll(".stats, .table-mini").forEach((n) => n.remove());
+  function tracesHtml(traces) {
+    if (!traces || !traces.length) return "";
+    return `<div class="traces">${traces.map((t) =>
+      `<span class="trace ${t.ok === false ? "bad" : t.wait ? "wait" : "ok"}">${t.summary || t.name}</span>`
+    ).join("")}</div>`;
+  }
+
+  function renderStats(into) {
     const table = attachments.find((a) => a.kind === "table");
     if (!table || !current().messages.length) return;
     const stats = document.createElement("div");
@@ -193,11 +156,8 @@
     mini.innerHTML = "<table><thead><tr>" + cols.map((c) => "<th>" + c + "</th>").join("") + "</tr></thead><tbody>" +
       rows.map((r) => "<tr>" + cols.map((c) => "<td>" + String(r[c]).replace(/</g, "&lt;") + "</td>").join("") + "</tr>").join("") +
       "</tbody></table>";
-    const first = thread.querySelector(".msg, .user-wrap");
-    if (first) {
-      thread.insertBefore(mini, first);
-      thread.insertBefore(stats, mini);
-    }
+    into.appendChild(stats);
+    into.appendChild(mini);
   }
 
   function renderThread() {
@@ -206,20 +166,25 @@
     welcome.classList.toggle("hidden", has);
     thread.classList.toggle("hidden", !has);
     thread.innerHTML = "";
+    if (has) renderStats(thread);
     c.messages.forEach((m) => {
+      if (m.traces && m.traces.length) {
+        const box = document.createElement("div");
+        box.innerHTML = tracesHtml(m.traces);
+        thread.appendChild(box.firstChild);
+      }
       if (m.role === "user") {
         const wrap = document.createElement("div");
         wrap.className = "user-wrap";
         wrap.innerHTML = `<div class="user-bubble">${md(m.content)}</div>`;
         thread.appendChild(wrap);
-      } else {
+      } else if (m.content) {
         const wrap = document.createElement("div");
         wrap.className = "msg assistant";
         wrap.innerHTML = `<div class="avatar">LA</div><div class="bubble">${md(m.content)}</div>`;
         thread.appendChild(wrap);
       }
     });
-    renderStats();
     thread.scrollTop = thread.scrollHeight;
   }
 
@@ -228,33 +193,92 @@
     input.style.height = Math.min(input.scrollHeight, 160) + "px";
   }
 
-  function systemPrompt() {
-    return [
-      "You are a pharmaceutical business and medical-data assistant running fully offline on a USB stick for an Indian pharma company.",
-      "Talk naturally, like ChatGPT: clear, concise, professional. You can chat about anything; do not demand a spreadsheet if none is attached.",
-      "When files ARE attached, use them. Lines labelled Authoritative metrics are already computed — use those numbers; never invent batch yields, adverse-event counts, or sales totals.",
-      "You may use knowledge of CDSCO, Schedule M, GMP, pharmacovigilance, CTRI, IPC, and typical Indian pharma plant/commercial language.",
-      "You are not a doctor and not a CDSCO filing system. Do not give patient-specific treatment. Flag that clinical or regulatory decisions need a qualified person.",
-      "Never write Python, pandas, or tool_code. Never claim you opened a disk path yourself.",
-    ].join(" ");
+  function attachmentPrelude() {
+    if (!attachments.length) return "";
+    return attachments.map((a) => a.context).join("\n\n");
   }
 
-  async function streamChat(messages, onDelta) {
+  async function callTool(name, args) {
+    const res = await fetch("/api/tools", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name, arguments: args || {} }),
+    });
+    const data = await res.json().catch(() => ({ ok: false, error: "bad tool response" }));
+    if (!res.ok && data.ok !== false) data.ok = false;
+    return data;
+  }
+
+  function formatToolResult(name, result) {
+    try {
+      if (name === "read_file" && result && result.content && result.content.length > 8000) {
+        const copy = Object.assign({}, result, { content: result.content.slice(0, 8000) + "\n… [truncated; use profile_table for CSVs]" });
+        return JSON.stringify(copy);
+      }
+      return JSON.stringify(result);
+    } catch {
+      return String(result);
+    }
+  }
+
+  async function completeChat(messages, { onDelta, useNativeTools }) {
+    const body = {
+      messages,
+      temperature: 0.35,
+      max_tokens: 1000,
+      stream: true,
+      cache_prompt: true,
+    };
+    if (useNativeTools) {
+      body.tools = T.OPENAI_TOOLS;
+      body.tool_choice = "auto";
+    }
     const res = await fetch(API + "/v1/chat/completions", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ messages, temperature: 0.7, max_tokens: 900, stream: true }),
+      body: JSON.stringify(body),
     });
+    if (res.status === 400 && useNativeTools) {
+      nativeToolsOk = false;
+      return completeChat(messages, { onDelta, useNativeTools: false });
+    }
     if (!res.ok) throw new Error("Model HTTP " + res.status);
+    const toolAcc = [];
+    let text = "";
+    let finish = "";
+
+    function takeDelta(j) {
+      const choice = j.choices && j.choices[0];
+      if (!choice) return;
+      if (choice.finish_reason) finish = choice.finish_reason;
+      const delta = choice.delta || {};
+      const msg = choice.message || {};
+      const piece = delta.content || msg.content || "";
+      if (piece) {
+        text += piece;
+        if (onDelta) onDelta(T.stripToolMarkup(text) || text);
+      }
+      const tcs = delta.tool_calls || msg.tool_calls;
+      if (Array.isArray(tcs)) {
+        for (const tc of tcs) {
+          const i = tc.index != null ? tc.index : toolAcc.length;
+          if (!toolAcc[i]) toolAcc[i] = { id: tc.id || "", name: "", arguments: "" };
+          if (tc.id) toolAcc[i].id = tc.id;
+          const fn = tc.function || {};
+          if (fn.name) toolAcc[i].name = fn.name;
+          if (fn.arguments) toolAcc[i].arguments += fn.arguments;
+        }
+      }
+    }
+
     if (!res.body) {
       const data = await res.json();
-      const t = data.choices?.[0]?.message?.content || "";
-      onDelta(t);
-      return t;
+      takeDelta(data);
+      return { text, tool_calls: toolAcc.filter(Boolean), finish_reason: finish };
     }
     const reader = res.body.getReader();
     const dec = new TextDecoder();
-    let buf = "", full = "";
+    let buf = "";
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
@@ -266,23 +290,30 @@
         if (!s.startsWith("data:")) continue;
         const payload = s.slice(5).trim();
         if (payload === "[DONE]") continue;
-        try {
-          const j = JSON.parse(payload);
-          const d = j.choices?.[0]?.delta?.content || j.choices?.[0]?.message?.content || "";
-          if (d) { full += d; onDelta(full); }
-        } catch {}
+        try { takeDelta(JSON.parse(payload)); } catch {}
       }
     }
-    return full;
+    return { text, tool_calls: toolAcc.filter(Boolean), finish_reason: finish };
   }
 
-  async function send() {
-    const text = input.value.trim();
+  function showLiveTraces(traces) {
+    thread.querySelectorAll(".traces.live").forEach((n) => n.remove());
+    if (!traces.length) return;
+    const box = document.createElement("div");
+    box.innerHTML = tracesHtml(traces);
+    const el = box.firstChild;
+    el.classList.add("live");
+    thread.appendChild(el);
+    thread.scrollTop = thread.scrollHeight;
+  }
+
+  async function send(preset) {
+    const text = (preset || input.value).trim();
     if (!text || busy) return;
     if (!engine) return;
     busy = true;
     sendBtn.disabled = true;
-    input.value = "";
+    if (!preset) input.value = "";
     autoGrow();
 
     const c = current();
@@ -299,29 +330,95 @@
     const bubble = wrap.querySelector(".bubble");
     thread.scrollTop = thread.scrollHeight;
 
-    const apiMessages = [{ role: "system", content: systemPrompt() }];
-    if (attachments.length) {
-      apiMessages.push({
-        role: "user",
-        content: attachments.map((a) => a.context).join("\n\n"),
-      });
+    const apiMessages = [{ role: "system", content: T.systemPrompt() }];
+    const attached = attachmentPrelude();
+    if (attached) {
+      apiMessages.push({ role: "user", content: attached });
       apiMessages.push({
         role: "assistant",
-        content: "I've got the attached file(s). I'll use them when relevant and chat normally otherwise.",
+        content: "I have the attached file metrics. I will use tools for anything on the USB data/reports folders.",
       });
     }
-    c.messages.forEach((m) => apiMessages.push({ role: m.role, content: m.content }));
+    c.messages.forEach((m) => {
+      if (m.role === "user" || m.role === "assistant") {
+        apiMessages.push({ role: m.role, content: m.content || "" });
+      }
+    });
+
+    const traces = [];
+    let finalText = "";
+    let usedNative = false;
 
     try {
-      const full = await streamChat(apiMessages, (t) => {
-        bubble.innerHTML = md(t) + '<span class="cursor"></span>';
-        thread.scrollTop = thread.scrollHeight;
-      });
-      bubble.innerHTML = md(full || "I couldn't generate a reply.");
-      c.messages.push({ role: "assistant", content: full || "" });
+      for (let step = 0; step < MAX_STEPS; step++) {
+        const result = await completeChat(apiMessages, {
+          useNativeTools: nativeToolsOk,
+          onDelta: (t) => {
+            bubble.innerHTML = md(t || "…") + '<span class="cursor"></span>';
+            thread.scrollTop = thread.scrollHeight;
+          },
+        });
+        const nativeCalls = T.extractToolCalls("", result.tool_calls);
+        const textCalls = T.extractToolCalls(result.text, null);
+        const calls = nativeCalls.length ? nativeCalls : textCalls;
+        usedNative = usedNative || nativeCalls.length > 0;
+
+        if (!calls.length) {
+          finalText = T.stripToolMarkup(result.text) || result.text || "";
+          break;
+        }
+
+        if (usedNative && nativeCalls.length) {
+          apiMessages.push({
+            role: "assistant",
+            content: result.text || "",
+            tool_calls: nativeCalls.map((call) => ({
+              id: call.id,
+              type: "function",
+              function: { name: call.name, arguments: JSON.stringify(call.arguments || {}) },
+            })),
+          });
+        } else {
+          apiMessages.push({
+            role: "assistant",
+            content: result.text || `<tool>${JSON.stringify({ name: calls[0].name, arguments: calls[0].arguments || {} })}</tool>`,
+          });
+        }
+
+        bubble.innerHTML = '<span class="cursor"></span>';
+        for (const call of calls) {
+          traces.push({ name: call.name, wait: true, summary: "Running " + call.name + "…" });
+          showLiveTraces(traces);
+          const out = await callTool(call.name, call.arguments);
+          traces.pop();
+          traces.push({
+            name: call.name,
+            ok: out.ok !== false,
+            summary: T.toolSummary(call.name, out),
+          });
+          showLiveTraces(traces);
+          const payload = "TOOL_RESULT " + call.name + ":\n" + formatToolResult(call.name, out);
+          if (usedNative && nativeCalls.length) {
+            apiMessages.push({ role: "tool", tool_call_id: call.id, content: payload });
+          } else {
+            apiMessages.push({ role: "user", content: payload });
+          }
+          if (call.name === "write_report" && out.ok !== false) refreshFiles();
+        }
+      }
+
+      if (!finalText) {
+        finalText = "I reached the tool-step limit. Ask me to continue from the last result.";
+      }
+      bubble.innerHTML = md(finalText);
+      thread.querySelectorAll(".traces.live").forEach((n) => n.remove());
+      c.messages.push({ role: "assistant", content: finalText, traces });
       saveChats();
+      renderThread();
     } catch (err) {
       bubble.textContent = String(err.message || err);
+      c.messages.push({ role: "assistant", content: String(err.message || err), traces });
+      saveChats();
     }
     busy = false;
     sendBtn.disabled = false;
@@ -343,6 +440,33 @@
     if (current().messages.length) renderThread();
   }
 
+  async function refreshFiles() {
+    const el = $("fileList");
+    try {
+      const data = await callTool("list_files", { folder: "all" });
+      const files = T.asList(data.files);
+      if (!files.length) {
+        el.innerHTML = '<div class="empty">No files in data/ or reports/</div>';
+        return;
+      }
+      el.innerHTML = "";
+      files.forEach((f) => {
+        const b = document.createElement("button");
+        b.type = "button";
+        b.textContent = f.path || f.name;
+        b.title = f.path;
+        b.onclick = () => {
+          const p = f.path || f.name;
+          if (/\.(csv|tsv|json)$/i.test(p)) send("Profile " + p + " with tools and explain the key numbers.");
+          else send("Read " + p + " with tools and summarize it.");
+        };
+        el.appendChild(b);
+      });
+    } catch {
+      el.innerHTML = '<div class="empty">Files unavailable until the dashboard API is up.</div>';
+    }
+  }
+
   $("newChat").onclick = () => {
     newChat(true);
     attachments = [];
@@ -357,6 +481,9 @@
     if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
   });
   $("fileInput").addEventListener("change", (e) => addFiles(e.target.files));
+  document.querySelectorAll(".suggestions [data-q]").forEach((btn) => {
+    btn.addEventListener("click", () => send(btn.getAttribute("data-q")));
+  });
 
   ["dragenter", "dragover"].forEach((ev) => {
     window.addEventListener(ev, (e) => { e.preventDefault(); composer.classList.add("over"); });
@@ -369,12 +496,13 @@
   });
 
   async function ping() {
+    if (busy) return;
     try {
       const res = await fetch(API + "/health", { cache: "no-store" });
       if (!res.ok) throw new Error("down");
       engine = true;
       engineStatus.className = "pill ok";
-      engineStatus.textContent = "Online";
+      engineStatus.textContent = "Online · agent";
       sendBtn.disabled = busy;
     } catch {
       engine = false;
@@ -384,11 +512,21 @@
     }
   }
 
+  async function loadStatus() {
+    try {
+      const r = await fetch("/api/status", { cache: "no-store" });
+      const s = await r.json();
+      if (s.model) modelNameEl.textContent = s.model.replace(/\.gguf$/i, "") + " · USB";
+    } catch {}
+  }
+
   loadChatsFromUsb().then(() => {
     renderNav();
     renderThread();
     input.focus();
   });
+  refreshFiles();
+  loadStatus();
   ping();
   setInterval(ping, 4000);
 })();

@@ -1,0 +1,9 @@
+01_shop_small.csv
+  rows: 4
+  line_total sum: 330
+  highest line_total: eggs 120
+
+02_monthly_spend.csv
+  rows: 4
+  amount sum: 12108
+  highest: rent 8000
