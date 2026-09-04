@@ -29,10 +29,14 @@ function Test-Port($port) {
 }
 
 function Get-Model {
-  $m = Get-ChildItem -Path $ModelDir -Filter *.gguf -ErrorAction SilentlyContinue |
-    Sort-Object Length -Descending | Select-Object -First 1
-  if (-not $m) { throw "No .gguf model in $ModelDir. Keep google_gemma-3n-E4B-it-Q4_K_M.gguf there." }
-  return $m.FullName
+  $all = @(Get-ChildItem -Path $ModelDir -Filter *.gguf -ErrorAction SilentlyContinue)
+  if (-not $all.Count) { throw "No .gguf in $ModelDir. Put MedGemma or another GGUF there." }
+  $prefer = @('medgemma','openbio','meditron','ayurparam','biomistral','gemma-3n')
+  foreach ($p in $prefer) {
+    $hit = $all | Where-Object { $_.Name -match $p } | Select-Object -First 1
+    if ($hit) { return $hit.FullName }
+  }
+  return ($all | Sort-Object Length -Descending | Select-Object -First 1).FullName
 }
 
 function Find-VulkanAsset($rel) {
