@@ -29,15 +29,48 @@ function Get-Model {
   return $m.FullName
 }
 
+function Find-VulkanAsset($rel) {
+  return $rel.assets | Where-Object { $_.name -match 'llama-.*-bin-win-vulkan-x64\.zip$' } | Select-Object -First 1
+}
+
+function Get-LlamaVulkanZip {
+  $headers = @{ 'User-Agent' = 'LocalAnalyst' }
+  $api = 'https://api.github.com/repos/ggml-org/llama.cpp'
+
+  $latest = Invoke-RestMethod -Uri "$api/releases/latest" -Headers $headers
+  $asset = Find-VulkanAsset $latest
+  if ($asset) { return $asset }
+
+  $tag = $null
+  $nightly = $latest.assets | Where-Object { $_.name -eq 'nightly-tag.txt' } | Select-Object -First 1
+  if ($nightly) {
+    try {
+      $tag = (Invoke-WebRequest -Uri $nightly.browser_download_url -UseBasicParsing).Content.Trim()
+    } catch {}
+  }
+  if (-not $tag -and $latest.body -match '\[(b\d+)\]') { $tag = $Matches[1] }
+  if (-not $tag) { $tag = 'b10621' }
+
+  $tagged = Invoke-RestMethod -Uri "$api/releases/tags/$tag" -Headers $headers
+  $asset = Find-VulkanAsset $tagged
+  if ($asset) { return $asset }
+
+  $rels = Invoke-RestMethod -Uri "$api/releases?per_page=20" -Headers $headers
+  foreach ($rel in $rels) {
+    $asset = Find-VulkanAsset $rel
+    if ($asset) { return $asset }
+  }
+  throw 'Could not find a Windows Vulkan llama.cpp zip on GitHub releases.'
+}
+
 function Install-LlamaServer {
   New-Item -ItemType Directory -Force -Path $BinDir | Out-Null
   $exe = Join-Path $BinDir 'llama-server.exe'
   if (Test-Path $exe) { return $exe }
 
-  Write-Host 'Downloading llama.cpp Windows Vulkan build (portable GPU, ~30 MB)...'
-  $rel = Invoke-RestMethod -Uri 'https://api.github.com/repos/ggml-org/llama.cpp/releases/latest' -Headers @{ 'User-Agent' = 'LocalAnalyst' }
-  $asset = $rel.assets | Where-Object { $_.name -match 'win-vulkan-x64\.zip$' } | Select-Object -First 1
-  if (-not $asset) { throw 'Could not find win-vulkan-x64.zip on llama.cpp releases.' }
+  Write-Host 'Downloading llama.cpp Windows Vulkan build (portable GPU)...'
+  $asset = Get-LlamaVulkanZip
+  Write-Host "Using $($asset.name)"
   $zip = Join-Path $env:TEMP $asset.name
   curl.exe -L --fail --retry 5 -o $zip $asset.browser_download_url
   Expand-Archive -Path $zip -DestinationPath $BinDir -Force
