@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Local Analyst</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <aside class="sidebar">
+    <button type="button" class="new-chat" id="newChat">
+      <span>+</span> New chat
+    </button>
+    <nav id="chatNav" class="chat-nav"></nav>
+    <div class="side-files">
+      <div class="side-label">USB data</div>
+      <div id="fileList" class="file-list">Loading…</div>
+    </div>
+    <div class="side-foot">
+      <div id="engineStatus" class="pill wait">Connecting…</div>
+      <div id="modelName" class="model-name">Pharma agent · USB · offline</div>
+    </div>
+  </aside>
+
+  <main id="stage">
+    <div id="welcome" class="welcome">
+      <div class="logo">LA</div>
+      <h1>How can I help you today?</h1>
+      <p class="sub">On-device agent for Indian pharma data — it can list, profile, and save files on this USB stick.</p>
+      <div class="suggestions">
+        <button type="button" data-q="What files are in my USB data folder?">List USB data</button>
+        <button type="button" data-q="Profile every CSV in data and tell me the key totals. Use Indian pharma language.">Profile the CSVs</button>
+        <button type="button" data-q="Write a short GMP-style note on 01_shop_small.csv into reports.">Save a report</button>
+      </div>
+    </div>
+
+    <div id="thread" class="thread hidden"></div>
+
+    <div class="dock">
+      <div id="chips" class="chips"></div>
+      <form id="composer" class="composer">
+        <label class="icon-btn" title="Attach file">
+          +
+          <input id="fileInput" type="file" multiple accept=".csv,.tsv,.txt,.json,.xlsx,.xls,.md" />
+        </label>
+        <textarea id="input" rows="1" placeholder="Message Local Analyst"></textarea>
+        <button type="submit" class="send" id="sendBtn" aria-label="Send">↑</button>
+      </form>
+      <p class="disclaimer">Runs on this PC from your USB stick. Tools only read data/ and write reports/. Nothing is sent to the cloud.</p>
+    </div>
+  </main>
+
+  <script src="agent-lib.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
